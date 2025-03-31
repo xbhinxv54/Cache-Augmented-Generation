@@ -10,21 +10,20 @@ from processing.similarity import calculate_similarity # Needs to be importable
 class TieredCacheManager:
     """Multi-level cache manager with tiered storage strategy"""
 
-    def __init__(self, vector_store_instance, exact_ttl: int = 3600, frequent_ttl: int = 86400, l2_similarity_threshold: float = 0.85, l2_access_threshold: int = 3):
+    def __init__(self, vector_store_instance, exact_ttl: int = 3600, frequent_ttl: int = 86400, l2_similarity_threshold: float = 0.6, l2_access_threshold: int = 2): # Adjusted L2 defaults
         # L1: Very fast, exact matches (in-memory)
-        self.exact_cache = ExactMatchCache(ttl_seconds=exact_ttl)  # 1 hour TTL
+        self.exact_cache = ExactMatchCache(ttl_seconds=exact_ttl)
 
         # L2: Semantic matches for frequently accessed items (in-memory)
-        # Stores mapping: normalized_query -> response
         self.frequent_cache: Dict[str, str] = {}
         self.frequent_timestamps: Dict[str, float] = {}
         self.frequent_ttl = frequent_ttl
         self.access_counts: Dict[str, int] = {}
-        self.l2_similarity_threshold = l2_similarity_threshold
-        self.l2_access_threshold = l2_access_threshold
+        self.l2_similarity_threshold = l2_similarity_threshold # Use the init value
+        self.l2_access_threshold = l2_access_threshold         # Use the init value
 
         # L3: Vector store (persistent)
-        self.vector_cache = VectorCache(vector_store_instance) # Pass the actual vector store instance
+        self.vector_cache = VectorCache(vector_store_instance)
 
         # Cache hit counters for analytics
         self.hits = {"L1": 0, "L2": 0, "L3": 0, "miss": 0}
@@ -163,16 +162,17 @@ class TieredCacheManager:
     def _get_dynamic_threshold(self, query: str) -> float:
         """Calculate dynamic similarity threshold based on query properties"""
         # Base threshold for vector search relevance
-        base_threshold = 0.55
+        # CONFIRMED this value is lower now
+        base_threshold = 0.55 # Keep the lower value
 
         # Example: Adjust based on query length (longer queries might need higher precision)
         word_count = len(query.split())
         if word_count <= 3:
             # Slightly more lenient for very short, potentially ambiguous queries
-            return max(0.50, base_threshold - 0.1)
+            return max(0.50, base_threshold - 0.1) # Ensure lower bound is reasonable
         elif word_count >= 10:
              # Slightly stricter for longer, more specific queries
-             return min(0.75, base_threshold + 0.05)
+             return min(0.75, base_threshold + 0.05) # Cap upper bound
 
         return base_threshold
 

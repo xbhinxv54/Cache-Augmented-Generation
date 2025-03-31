@@ -12,8 +12,6 @@ from monitoring.feedback import FeedbackSystem
 from processing.similarity import calculate_similarity
 
 
-class ImprovedCAGOrchestrator:
-    """Main orchestrator for the cache-augmented generation system"""
 
 class ImprovedCAGOrchestrator:
     """Main orchestrator for the cache-augmented generation system"""
@@ -111,56 +109,38 @@ class ImprovedCAGOrchestrator:
     def _is_high_quality_match(self, source: str, score: Optional[float], docs: List[Document], normalized_query: str) -> bool:
         """Determine if the cached match is high quality enough to use directly."""
 
-        # --- BUG FIX: Handle L1_exact FIRST and return immediately ---
+        # Handle L1_exact FIRST and return immediately
         if source == "L1_exact":
             print("[Orchestrator] Quality Check: L1 source is always high quality. Returning True.") # DEBUG L1
             return True
-        # --- END BUG FIX ---
 
         # If not L1, proceed with other checks
         if not docs:
             print("[Orchestrator] Quality Check: No documents provided (and not L1). Returning False.") # DEBUG
             return False
 
-        # L2 frequent/semantic matches (Optional - check if implemented/needed)
+        # L2 frequent/semantic matches
         if source == "L2_frequent":
-            print(f"[Orchestrator] L2 Quality Check: Score={score} (Threshold: {self.quality_threshold})") # DEBUG L2
-            # Note: L2 might need its own threshold, using quality_threshold for now
-            is_high_quality = score is not None and score >= self.quality_threshold
+            # Use the specific L2 quality threshold defined in the orchestrator
+            print(f"[Orchestrator] L2 Quality Check: Score={score:.4f} (Threshold: {self.l2_quality_threshold})") # DEBUG L2
+            is_high_quality = score is not None and score >= self.l2_quality_threshold
             print(f"[Orchestrator] L2 Quality Check Result: {is_high_quality}") # DEBUG L2
             return is_high_quality
 
-        # L3 vector matches
+        # L3 vector matches - REMOVED SEMANTIC CHECK
         if source == "L3_vector":
-            top_doc = docs[0]
-            original_cached_query = top_doc.metadata.get("original_query")
             # Use self.quality_threshold for vector score check
             print(f"[Orchestrator] L3 Quality Check Input: InputQuery='{normalized_query}', VectorScore={score:.4f} (Threshold: {self.quality_threshold})")
 
-            # Check Vector Score FIRST
             vector_check_passed = score is not None and score >= self.quality_threshold
 
-            if not vector_check_passed:
-                print(f"[Orchestrator] L3 Quality Check Result (Vector Failed): False")
-                return False
-
-            # If vector check passes, proceed to semantic check if original query exists
-            if original_cached_query:
-                 norm_original_cached = self.query_preprocessor.normalize(original_cached_query)
-                 semantic_check_score = calculate_similarity(normalized_query, norm_original_cached)
-                 # Use self.semantic_threshold for semantic score check
-                 print(f"[Orchestrator] L3 Quality Check Details: CachedOriginal='{norm_original_cached}', SemanticCheckScore={semantic_check_score:.4f} (Threshold: {self.semantic_threshold})")
-
-                 semantic_check_passed = semantic_check_score >= self.semantic_threshold
-                 is_high_quality = semantic_check_passed # Final result depends only on semantic now
-
-                 print(f"[Orchestrator] L3 Quality Check Result (Vector Passed, Semantic Result): {is_high_quality}")
-                 return is_high_quality
-            else:
-                 # No original query, Vector check already passed, so it's high quality
-                 print(f"[Orchestrator] L3 Quality Check Details: No original query metadata. Vector check passed.")
+            # Decision now relies ONLY on the vector score check
+            if vector_check_passed:
                  print(f"[Orchestrator] L3 Quality Check Result (Vector Only Passed): True")
                  return True
+            else:
+                 print(f"[Orchestrator] L3 Quality Check Result (Vector Failed): False")
+                 return False
 
         # Default to False if source is unknown or other conditions not met
         print(f"[Orchestrator] Quality Check: Unknown source '{source}' or fallthrough. Returning False.") # DEBUG
