@@ -167,17 +167,3 @@ caching/tiered_cache.py -> _get_dynamic_threshold:
 
 base_threshold: The starting point for the L3 vector search relevance score threshold (e.g., 0.55).
 
-💡 Potential Future Improvements
-Implement a more robust semantic similarity metric for L2 (already done!).
-
-Add option to use embedding cosine similarity for L3 quality check instead of just vector score.
-
-Improve L2 cache embedding lookup performance (e.g., pre-compute/cache L2 key embeddings).
-
-Integrate the feedback system more deeply (e.g., automatically remove low-rated responses).
-
-Add more sophisticated context management.
-
-Expand dashboard features (e.g., time-series charts, feedback visualization).
-
-Implement asynchronous operations for dashboard queries.
