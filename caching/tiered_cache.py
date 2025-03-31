@@ -1,16 +1,19 @@
 import time
-from typing import List, Tuple, Dict, Any, Optional
+from typing import Dict, Optional, Tuple, List, Any
 from langchain.schema import Document
-
-# Assuming these are in the correct relative paths based on the structure
-from .exact_cache import ExactMatchCache, normalize_key # Import consistent normalization
+from .exact_cache import ExactMatchCache, normalize_key
 from .vector_cache import VectorCache
-from processing.similarity import calculate_similarity # Needs to be importable
+# Remove if calculate_similarity (Jaccard) is no longer needed anywhere
+# from processing.similarity import calculate_similarity
+from sklearn.metrics.pairwise import cosine_similarity # ADD THIS IMPORT
 
+
+# --- UPDATED CLASS ---
 class TieredCacheManager:
     """Multi-level cache manager with tiered storage strategy"""
 
-    def __init__(self, vector_store_instance, exact_ttl: int = 3600, frequent_ttl: int = 86400, l2_similarity_threshold: float = 0.6, l2_access_threshold: int = 2): # Adjusted L2 defaults
+    # --- UPDATED __init__ ---
+    def __init__(self, vector_store_instance, embedding_model, exact_ttl: int = 3600, frequent_ttl: int = 86400, l2_similarity_threshold: float = 0.80, l2_access_threshold: int = 2):
         # L1: Very fast, exact matches (in-memory)
         self.exact_cache = ExactMatchCache(ttl_seconds=exact_ttl)
 
@@ -21,6 +24,7 @@ class TieredCacheManager:
         self.access_counts: Dict[str, int] = {}
         self.l2_similarity_threshold = l2_similarity_threshold # Use the init value
         self.l2_access_threshold = l2_access_threshold         # Use the init value
+        self.embedding_model = embedding_model                 # Store embedding model
 
         # L3: Vector store (persistent)
         self.vector_cache = VectorCache(vector_store_instance)
@@ -28,117 +32,166 @@ class TieredCacheManager:
         # Cache hit counters for analytics
         self.hits = {"L1": 0, "L2": 0, "L3": 0, "miss": 0}
 
+    # --- UPDATED METHOD ---
     def check_cache(self, query: str) -> Tuple[List[Document], bool, str, Optional[float]]:
         """
         Check all cache levels and return matching documents, hit status, source, and score (if applicable).
-        Score is typically relevant for L3 hits.
+        Score is typically relevant for L2/L3 hits. Updates access count.
         """
-        # Use consistently normalized query for lookups
         normalized_query = normalize_key(query)
 
         # L1: Check exact match cache first (fastest)
-        exact_match_response = self.exact_cache.get(normalized_query) # Use normalized query
+        exact_match_response = self.exact_cache.get(normalized_query)
         if exact_match_response is not None:
             self.hits["L1"] += 1
-            print(f"[TieredCache] L1 HIT: {normalized_query}") # DEBUG
-             # For L1, score is effectively 1.0 (perfect match)
+            print(f"[TieredCache] L1 HIT: {normalized_query}")
+            # --- FIX: Update access count on L1 Hit ---
+            self._update_access_count(normalized_query)
+            # Promote to L2 if threshold met
+            if self.access_counts.get(normalized_query, 0) >= self.l2_access_threshold:
+                 # Check if already promoted to avoid redundant prints/timestamp updates
+                 if normalized_query not in self.frequent_cache:
+                     self._add_to_frequent_cache(normalized_query, exact_match_response)
+            # --------------------------------------------
             return [Document(page_content=exact_match_response, metadata={"normalized_query": normalized_query, "source": "L1_exact"})], True, "L1_exact", 1.0
 
-        # L2: Check frequent/semantic cache (optional enhancement)
-        l2_match = self._check_frequent_cache(normalized_query) # Use normalized query
+        # L2: Check frequent/semantic cache (uses embeddings now)
+        l2_match = self._check_frequent_cache(normalized_query) # This already updates access count for the MATCHED item on hit
         if l2_match:
             self.hits["L2"] += 1
             response, original_cached_query, similarity_score = l2_match
-            # print(f"[TieredCache] L2 HIT: Input '{normalized_query}' matched '{original_cached_query}' with score {similarity_score:.2f}") # DEBUG
-            # Return score from L2 similarity check
+            print(f"[TieredCache] L2 HIT: Input '{normalized_query}' matched '{original_cached_query}' with Cosine score {similarity_score:.4f}")
+            # L2 already handles its own access count update inside _check_frequent_cache
             return [Document(page_content=response, metadata={"matched_query": original_cached_query, "input_query": normalized_query, "source": "L2_frequent", "similarity": similarity_score})], True, "L2_frequent", similarity_score
 
         # L3: Vector search for semantic matches
-    # L3: Vector search for semantic matches
-        threshold = self._get_dynamic_threshold(normalized_query)
-        vector_results = self.vector_cache.search(query, threshold=threshold) # Use original query
+        threshold = self._get_dynamic_threshold(normalized_query) # Use dynamic threshold
+        vector_results = self.vector_cache.search(query, threshold=threshold) # Use original query for search
 
-        # --- ADD THIS DEBUG BLOCK ---
-        print(f"[TieredCache] L3 Search Results for '{query}':")
+        print(f"[TieredCache] L3 Search Results for '{query}':") # Keep L3 debug print
         if vector_results:
             for i, (doc, score) in enumerate(vector_results):
                 print(f"  - Hit {i+1}: Score={score:.4f}, OrigQuery='{doc.metadata.get('original_query', 'N/A')}'")
         else:
             print("  - No hits found meeting threshold.")
-        # --- END DEBUG BLOCK ---
 
         if vector_results:
             self.hits["L3"] += 1
-            # Sort by score descending (most relevant first)
+            # --- FIX: Update access count on L3 Hit ---
+            # Count access for the *input* query when L3 finds something potentially relevant
+            self._update_access_count(normalized_query)
+            # We don't promote based on L3 hits to L2 automatically here
+            # --------------------------------------------
             vector_results.sort(key=lambda item: item[1], reverse=True)
             docs = [doc for doc, _ in vector_results]
-            top_score = vector_results[0][1] # Score of the best match
-            # Add source info to metadata for clarity downstream
+            top_score = vector_results[0][1]
             for doc, score in vector_results:
                 doc.metadata["source"] = "L3_vector"
                 doc.metadata["score"] = score
-            # print(f"[TieredCache] L3 HIT: {normalized_query} - Found {len(docs)} results, Top Score: {top_score:.2f}") # DEBUG
             return docs, True, "L3_vector", top_score
 
-        # print(f"[TieredCache] MISS: {normalized_query}") # DEBUG
+        # --- FIX: Update access count on MISS ---
+        # Count the miss for the input query as well
+        self._update_access_count(normalized_query)
+        # Promote to L2 if threshold met *after* a miss led to generation (handled in orchestrator's add_to_cache call now)
+        # -----------------------------------------
+        print(f"[TieredCache] MISS: {normalized_query}")
         self.hits["miss"] += 1
         return [], False, "miss", None
 
     def add_to_cache(self, query: str, response: str) -> None:
-        """Store in appropriate cache levels. Uses normalized query for L1/L2 keys."""
+        """Store in appropriate cache levels. L1/L3 always, L2 if frequency threshold met."""
         normalized_query = normalize_key(query)
 
         # L1: Add to exact match cache
         self.exact_cache.add(normalized_query, response)
 
-        # L2: Update access count using normalized query. Promote if threshold met.
-        self._update_access_count(normalized_query)
+        # L2: Check access count (already updated by check_cache on miss/hit)
+        # Promote if threshold met. This handles promotion after generation.
         if self.access_counts.get(normalized_query, 0) >= self.l2_access_threshold:
-            self._add_to_frequent_cache(normalized_query, response)
+             # Check if already promoted to avoid redundant prints/timestamp updates
+             if normalized_query not in self.frequent_cache:
+                 self._add_to_frequent_cache(normalized_query, response)
 
-        # L3: Add to vector store. Use original query in metadata for better context retrieval later.
-        # Pass the *original* non-normalized query here for metadata.
+        # L3: Add to vector store. Pass original query for metadata.
         self.vector_cache.add(query, response, {"original_query": query})
 
+    # --- UPDATED METHOD ---
     def _check_frequent_cache(self, normalized_query: str) -> Optional[Tuple[str, str, float]]:
-        """Check if normalized query semantically matches anything in frequent cache."""
+        """Check if normalized query semantically matches anything in frequent cache using embeddings."""
         self._clear_expired_frequent() # Clean expired L2 entries first
 
         best_match = None
-        highest_similarity = -1.0
+        highest_similarity = -1.0 # Cosine similarity ranges -1 to 1
 
-        # Check for similar queries in the L2 cache
-        for cached_normalized_query, response in self.frequent_cache.items():
-            similarity = calculate_similarity(normalized_query, cached_normalized_query)
-            print(f"[TieredCache] L2 Check: Input='{normalized_query}', Cached='{cached_normalized_query}', Similarity={similarity:.4f} (Threshold: {self.l2_similarity_threshold})") # DEBUG
+        # Check only if cache has items and embedding model is available
+        if not self.frequent_cache or not hasattr(self, 'embedding_model') or self.embedding_model is None:
+             return None
 
-            if similarity > self.l2_similarity_threshold and similarity > highest_similarity:
-                 highest_similarity = similarity
-                 best_match = (response, cached_normalized_query, similarity) # Return response, the query it matched, and score
+        try:
+            # Embed the input query once
+            query_embedding = self.embedding_model.embed_query(normalized_query)
 
+            cached_keys = list(self.frequent_cache.keys())
+            if not cached_keys:
+                 return None # No keys in cache to compare against
+
+            # Embed all cached keys
+            # Consider batch embedding if embed_documents supports it well and L2 cache grows large
+            cached_embeddings = self.embedding_model.embed_documents(cached_keys)
+
+            # Calculate cosine similarities between input query and all cached keys
+            # similarities will be a numpy array of shape (1, num_cached_keys)
+            similarities = cosine_similarity([query_embedding], cached_embeddings)[0] # Extract the 1D array of scores
+
+            # Find the best match above the threshold
+            for i, cached_key in enumerate(cached_keys):
+                similarity = similarities[i]
+                print(f"[TieredCache] L2 Check: Input='{normalized_query}', Cached='{cached_key}', CosineSimilarity={similarity:.4f} (Threshold: {self.l2_similarity_threshold})") # DEBUG
+
+                # Check if this similarity score is above threshold and better than the current best
+                if similarity >= self.l2_similarity_threshold and similarity > highest_similarity:
+                     highest_similarity = similarity
+                     # Ensure the key still exists in the cache (could expire between getting keys and checking)
+                     if cached_key in self.frequent_cache:
+                         response = self.frequent_cache[cached_key]
+                         best_match = (response, cached_key, similarity) # Store response, matched key, and score
+                     else:
+                          # This case is unlikely but handles potential race conditions/timing issues
+                          print(f"[TieredCache] Warning: Key '{cached_key}' found during L2 similarity check but missing from frequent_cache dict.")
+
+        except Exception as e:
+            print(f"[TieredCache] Error during L2 embedding/similarity check: {e}")
+            return None # Return None on error to avoid crashing
+
+        # If a best match was found
         if best_match:
-            # Update access count for the *matched* frequent query
-            self._update_access_count(best_match[1])
-            # Update timestamp for the matched item to keep it fresh
-            self.frequent_timestamps[best_match[1]] = time.time()
-            return best_match
+            matched_cached_query_key = best_match[1]
+            # Update access count for the *matched* frequent query key to keep it relevant
+            self._update_access_count(matched_cached_query_key)
+            # Update timestamp for the matched item to keep it fresh in L2
+            if matched_cached_query_key in self.frequent_timestamps:
+                self.frequent_timestamps[matched_cached_query_key] = time.time()
+            return best_match # Return tuple: (response, matched_key, score)
 
-        return None
+        return None # No suitable match found in L2
 
+    # --- Existing methods (_update_access_count, _add_to_frequent_cache, _clear_expired_frequent, _get_dynamic_threshold, get_stats, remove_from_cache) remain the same ---
+    # Make sure _get_dynamic_threshold uses a low base_threshold like 0.55
     def _update_access_count(self, normalized_query: str) -> None:
         """Track query frequency using normalized keys."""
         self.access_counts[normalized_query] = self.access_counts.get(normalized_query, 0) + 1
-        # print(f"[TieredCache] Access count for '{normalized_query}': {self.access_counts[normalized_query]}") # DEBUG
+        print(f"[TieredCache] Access count for '{normalized_query}': {self.access_counts[normalized_query]}") # DEBUG
 
     def _add_to_frequent_cache(self, normalized_query: str, response: str) -> None:
         """Add to frequent cache (L2) with timestamp using normalized keys."""
         if normalized_query not in self.frequent_cache:
-             # print(f"[TieredCache] Promoting to L2: {normalized_query}") # DEBUG
+             print(f"[TieredCache] Promoting to L2: '{normalized_query}' (Access Count: {self.access_counts.get(normalized_query, 'N/A')})") # DEBUG
              self.frequent_cache[normalized_query] = response
              self.frequent_timestamps[normalized_query] = time.time()
         else:
-             # Optionally update the response if it's already there? Or just refresh timestamp?
-             # Let's just refresh the timestamp to keep it alive
+             # If already in L2 (e.g. promoted via L1 hit, then generated again later?), just refresh timestamp
+             print(f"[TieredCache] Refreshing L2 timestamp for existing key: '{normalized_query}'") # DEBUG
              self.frequent_timestamps[normalized_query] = time.time()
 
 
@@ -162,17 +215,14 @@ class TieredCacheManager:
     def _get_dynamic_threshold(self, query: str) -> float:
         """Calculate dynamic similarity threshold based on query properties"""
         # Base threshold for vector search relevance
-        # CONFIRMED this value is lower now
-        base_threshold = 0.55 # Keep the lower value
+        base_threshold = 0.55 # Keep this lower for initial L3 search
 
-        # Example: Adjust based on query length (longer queries might need higher precision)
+        # Example: Adjust based on query length
         word_count = len(query.split())
         if word_count <= 3:
-            # Slightly more lenient for very short, potentially ambiguous queries
-            return max(0.50, base_threshold - 0.1) # Ensure lower bound is reasonable
+            return max(0.50, base_threshold - 0.1)
         elif word_count >= 10:
-             # Slightly stricter for longer, more specific queries
-             return min(0.75, base_threshold + 0.05) # Cap upper bound
+             return min(0.75, base_threshold + 0.05)
 
         return base_threshold
 
@@ -188,8 +238,9 @@ class TieredCacheManager:
              except Exception:
                  pass # Ignore if count fails
 
+        # Corrected key names (ensure consistency)
         return {
-            "hits_ L1": self.hits["L1"],
+            "hits_L1": self.hits["L1"],
             "hits_L2": self.hits["L2"],
             "hits_L3": self.hits["L3"],
             "misses": self.hits["miss"],
@@ -197,7 +248,7 @@ class TieredCacheManager:
             "overall_hit_ratio": total_hits / max(1, total_lookups),
             "l1_size": len(self.exact_cache.cache),
             "l2_size": len(self.frequent_cache),
-            "l3_approx_size": l3_size, # Provide L3 size if easily available
+            "l3_approx_size": l3_size,
         }
 
     def remove_from_cache(self, query: str) -> bool:
@@ -214,18 +265,15 @@ class TieredCacheManager:
             del self.frequent_cache[normalized_query]
             if normalized_query in self.frequent_timestamps:
                 del self.frequent_timestamps[normalized_query]
-            # Optionally remove from access counts too
             if normalized_query in self.access_counts:
                 del self.access_counts[normalized_query]
             removed = True
 
-        # Remove from L3 (using original query stored in metadata)
-        # We need the original query that *generated* the response we want to remove.
-        # This is tricky if we only have the potentially *different* query used for lookup.
-        # Assuming the 'query' passed here is the one whose response should be removed.
-        # We rely on VectorCache's ability to remove based on 'original_query' metadata.
-        if self.vector_cache.remove_by_metadata(query) > 0: # Use original query
-             removed = True
+        # Remove from L3
+        if hasattr(self.vector_cache, 'remove_by_metadata'):
+            # Assumes remove_by_metadata uses the 'original_query' passed here effectively
+            if self.vector_cache.remove_by_metadata(query) > 0:
+                 removed = True
 
-        # print(f"[TieredCache] REMOVE attempt for '{normalized_query}': Success={removed}") # DEBUG
+        print(f"[TieredCache] REMOVE attempt for '{normalized_query}': Success={removed}") # DEBUG
         return removed

@@ -8,25 +8,26 @@ from processing.response_generator import ResponseGenerator
 from processing.query_preprocessor import QueryPreprocessor
 from monitoring.telemetry import TelemetrySystem
 from monitoring.feedback import FeedbackSystem
-# Assuming similarity is needed here directly, or handled within cache manager/feedback
-from processing.similarity import calculate_similarity
+# Keep calculate_similarity only if used elsewhere, removed from L3 check
+# from processing.similarity import calculate_similarity
 
-
-
+# --- UPDATED CLASS ---
 class ImprovedCAGOrchestrator:
     """Main orchestrator for the cache-augmented generation system"""
 
-    def __init__(self, cache_manager: TieredCacheManager, response_generator: ResponseGenerator, quality_threshold: float = 0.67, semantic_threshold: float = 0.62):
+    # --- UPDATED __init__ ---
+    def __init__(self, cache_manager: TieredCacheManager, response_generator: ResponseGenerator, quality_threshold: float = 0.67, l2_quality_threshold: float = 0.80): # Default L2 threshold matches TieredCacheManager
+        self.cache_manager = cache_manager
         self.response_generator = response_generator
-        self.cache_manager=cache_manager
         self.telemetry = TelemetrySystem()
         self.feedback_system = FeedbackSystem(cache_manager)
         self.query_preprocessor = QueryPreprocessor()
         self.query_log = []
-        self.quality_threshold = quality_threshold # Threshold for vector score
-        self.semantic_threshold = semantic_threshold # NEW: Threshold for semantic check score
-        print(f"[Orchestrator Init] quality_threshold={self.quality_threshold}, semantic_threshold={self.semantic_threshold}") # DEBUG Init values
+        self.quality_threshold = quality_threshold       # Threshold for L3 vector score
+        self.l2_quality_threshold = l2_quality_threshold # Threshold for L2 semantic score
+        print(f"[Orchestrator Init] L3 quality_threshold={self.quality_threshold}, L2 quality_threshold={self.l2_quality_threshold}") # DEBUG Init values
 
+    # --- UPDATED METHOD (Refined Logic) ---
     def ask(self, query: str) -> str:
         start_time = time.time()
         original_query = query
@@ -45,17 +46,14 @@ class ImprovedCAGOrchestrator:
             if is_high_quality:
                  # Use the cached response directly
                  final_response = self.response_generator.retrieve_cached_response(relevant_docs)
-                 final_source = f"cache_{initial_source}"
+                 final_source = f"cache_{initial_source}" # e.g., cache_L1_exact, cache_L2_frequent
                  response_served_from_cache = True
                  print(f"[Orchestrator] Using high-quality CACHED response from {initial_source}")
             else:
                  # Hit found, but low quality. Log it, but proceed to generate.
-                 print(f"[Orchestrator] LOW QUALITY HIT from {initial_source} (Score: {initial_score:.2f}). Will generate new response.")
+                 print(f"[Orchestrator] LOW QUALITY HIT from {initial_source} (Score: {initial_score:.4f}). Will generate new response.")
                  final_source = "miss_low_quality_hit"
-                 # Decide if relevant_docs should be used as context for generation
-                 # Option: Keep docs: pass relevant_docs
-                 # Option: Ignore docs: pass []
-                 # Let's keep them for now, generator might use them
+                 # Pass relevant_docs as context for generation
         else:
             # Initial lookup was a complete miss
             print(f"[Orchestrator] Cache MISS for: {original_query}")
@@ -65,15 +63,19 @@ class ImprovedCAGOrchestrator:
         # If no high-quality cached response was selected, generate a new one
         if not final_response:
             print(f"[Orchestrator] Generating NEW response...")
-            final_response = self.response_generator.generate_new_response(original_query, relevant_docs) # Pass potential low-qual docs as context
+            # Pass potential low-quality docs as context if initial_hit was True but !is_high_quality
+            # Otherwise pass empty list if it was a clean miss
+            context_docs = relevant_docs if initial_hit else []
+            final_response = self.response_generator.generate_new_response(original_query, context_docs)
             final_source = "generated" # Overwrite source if generated
             response_served_from_cache = False
 
             # Cache the newly generated response if applicable
             if self._should_cache_response(original_query, final_response):
                 print(f"[Orchestrator] Caching newly generated response for: '{original_query}'")
+                # Let add_to_cache handle L1/L3 and L2 promotion check
                 self.cache_manager.add_to_cache(original_query, final_response)
-                # ... post-add check ...
+                # Optional: Add post-add check logs here if needed
             else:
                 print(f"[Orchestrator] Decided NOT to cache newly generated response for: '{original_query}'")
 
@@ -81,31 +83,32 @@ class ImprovedCAGOrchestrator:
         # Record telemetry using final determination
         end_time = time.time()
         response_time_ms = (end_time - start_time) * 1000
-        # Use the initial_source for cache breakdown, but response_served_from_cache for hit ratio
+        # Log initial source for analysis, but use response_served_from_cache for hit ratio
         self.telemetry.record_query(original_query, response_served_from_cache, initial_source if initial_hit else "miss", response_time_ms)
 
-        # ... query logging ...
+        # Add to internal query log
         self.query_log.append({
             "timestamp": time.time(),
             "query": original_query,
             "normalized_query": normalized_query,
-            "is_hit_initial": initial_hit, # Whether cache returned *anything*
-            "cache_source": initial_source if initial_hit else "miss", # L1/L2/L3/miss from initial check
+            "is_hit_initial": initial_hit,
+            "cache_source": initial_source if initial_hit else "miss",
             "score": initial_score,
-            "response_source": final_source, # cache_L1/cache_L2/cache_L3/generated/miss_low_quality
+            "response_source": final_source, # Where the final response came from
             "response_time_ms": response_time_ms,
             "response": final_response[:100] + "..." if len(final_response)>100 else final_response
         })
         if len(self.query_log) > 100: self.query_log.pop(0)
 
-
         return final_response
+
     def provide_feedback(self, query: str, response: str, rating: int) -> None:
         """Record user feedback (e.g., 1-5 rating) and potentially update cache."""
-        # Normalize query to potentially find related feedback entries
         normalized_query = self.query_preprocessor.normalize(query)
         self.feedback_system.record_feedback(normalized_query, response, rating, original_query=query)
 
+
+    # --- UPDATED METHOD ---
     def _is_high_quality_match(self, source: str, score: Optional[float], docs: List[Document], normalized_query: str) -> bool:
         """Determine if the cached match is high quality enough to use directly."""
 
@@ -146,25 +149,25 @@ class ImprovedCAGOrchestrator:
         print(f"[Orchestrator] Quality Check: Unknown source '{source}' or fallthrough. Returning False.") # DEBUG
         return False
 
+    # --- Existing methods (_should_cache_response, get_stats, cleanup) remain the same ---
+    # Ensure _should_cache_response has a reasonable length check (e.g., >= 5)
     def _should_cache_response(self, query: str, response: str) -> bool:
         """Determine if a newly generated response should be cached."""
-        # Basic heuristics:
-        # Don't cache very short responses (might be errors like "I don't know")
-        if len(response) < 5:
-            # print(f"[Orchestrator] Not caching response - too short: {len(response)} chars") #DEBUG
+        min_length = 5 # Allow short answers like "Paris."
+        if len(response) < min_length:
+            print(f"[Orchestrator] Not caching response - too short ({len(response)} < {min_length}): '{response}'") #DEBUG
             return False
 
-        # Don't cache responses to potentially volatile or sensitive queries (example)
         if "password" in query.lower() or "credit card" in query.lower():
-             # print(f"[Orchestrator] Not caching response - sensitive query detected.") #DEBUG
+             print(f"[Orchestrator] Not caching response - sensitive query detected.") #DEBUG
              return False
 
-        # Don't cache generic failure messages
-        if "cannot answer" in response.lower() or "don't have information" in response.lower():
-             # print(f"[Orchestrator] Not caching response - generic failure message.") #DEBUG
+        # Adjusted check for generic failures
+        generic_failures = ["cannot answer", "don't have information", "don't know", "unable to provide"]
+        if any(phrase in response.lower() for phrase in generic_failures):
+             print(f"[Orchestrator] Not caching response - generic failure message.") #DEBUG
              return False
 
-        # Cache most other generated responses
         return True
 
     def get_stats(self) -> Dict[str, Any]:
@@ -173,7 +176,7 @@ class ImprovedCAGOrchestrator:
         telemetry_metrics = self.telemetry.get_metrics()
         feedback_metrics = self.feedback_system.get_response_quality_metrics()
 
-        # Calculate actual response source distribution from the log for finer detail
+        # Calculate actual response source distribution from the log
         response_sources = {
             "cache_L1": 0, "cache_L2": 0, "cache_L3": 0, "generated": 0, "miss_low_quality": 0
         }
@@ -181,13 +184,11 @@ class ImprovedCAGOrchestrator:
         if total_resp > 0:
             for entry in self.query_log:
                 src = entry.get("response_source", "unknown")
-                if src.startswith("cache_L1"): response_sources["cache_L1"] += 1
-                elif src.startswith("cache_L2"): response_sources["cache_L2"] += 1
-                elif src.startswith("cache_L3"): response_sources["cache_L3"] += 1
+                if src == "cache_L1_exact": response_sources["cache_L1"] += 1
+                elif src == "cache_L2_frequent": response_sources["cache_L2"] += 1
+                elif src == "cache_L3_vector": response_sources["cache_L3"] += 1
                 elif src == "generated": response_sources["generated"] += 1
-                # Check for low quality hits that resulted in generation
-                if entry.get("cache_source") == "miss_low_quality_hit":
-                    response_sources["miss_low_quality"] += 1
+                elif src == "miss_low_quality_hit": response_sources["miss_low_quality"] += 1
 
 
         actual_cache_responses = response_sources["cache_L1"] + response_sources["cache_L2"] + response_sources["cache_L3"]
@@ -196,8 +197,8 @@ class ImprovedCAGOrchestrator:
         return {
             "overall_performance": {
                 "queries_processed": telemetry_metrics["query_count"],
-                "avg_response_time_ms": telemetry_metrics["avg_response_time_ms"],
-                "actual_response_hit_ratio": actual_hit_ratio, # Ratio of responses served *directly* from cache
+                "avg_response_time_ms": telemetry_metrics["avg_response_time_ms"], # Correct key
+                "actual_response_hit_ratio": actual_hit_ratio,
             },
             "cache_performance": cache_stats, # Raw lookup stats from TieredCacheManager
             "response_source_distribution": response_sources, # Based on orchestrator log
@@ -209,5 +210,9 @@ class ImprovedCAGOrchestrator:
         """Perform cleanup tasks, e.g., persisting vector store."""
         if hasattr(self.cache_manager.vector_cache.vector_store, 'persist'):
             print("[Orchestrator] Persisting vector store...")
-            self.cache_manager.vector_cache.vector_store.persist()
+            try:
+                self.cache_manager.vector_cache.vector_store.persist()
+                print("[Orchestrator] Vector store persisted.")
+            except Exception as e:
+                print(f"[Orchestrator] Error persisting vector store: {e}")
         # Add any other cleanup needed
