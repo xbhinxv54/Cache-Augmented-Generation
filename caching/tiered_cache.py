@@ -3,16 +3,15 @@ from typing import Dict, Optional, Tuple, List, Any
 from langchain.schema import Document
 from .exact_cache import ExactMatchCache, normalize_key
 from .vector_cache import VectorCache
-# Remove if calculate_similarity (Jaccard) is no longer needed anywhere
 # from processing.similarity import calculate_similarity
-from sklearn.metrics.pairwise import cosine_similarity # ADD THIS IMPORT
+from sklearn.metrics.pairwise import cosine_similarity 
 
 
-# --- UPDATED CLASS ---
+
 class TieredCacheManager:
     """Multi-level cache manager with tiered storage strategy"""
 
-    # --- UPDATED __init__ ---
+    
     def __init__(self, vector_store_instance, embedding_model, exact_ttl: int = 3600, frequent_ttl: int = 86400, l2_similarity_threshold: float = 0.80, l2_access_threshold: int = 2):
         # L1: Very fast, exact matches (in-memory)
         self.exact_cache = ExactMatchCache(ttl_seconds=exact_ttl)
@@ -24,7 +23,7 @@ class TieredCacheManager:
         self.access_counts: Dict[str, int] = {}
         self.l2_similarity_threshold = l2_similarity_threshold # Use the init value
         self.l2_access_threshold = l2_access_threshold         # Use the init value
-        self.embedding_model = embedding_model                 # Store embedding model
+        self.embedding_model = embedding_model                 
 
         # L3: Vector store (persistent)
         self.vector_cache = VectorCache(vector_store_instance)
@@ -32,7 +31,7 @@ class TieredCacheManager:
         # Cache hit counters for analytics
         self.hits = {"L1": 0, "L2": 0, "L3": 0, "miss": 0}
 
-    # --- UPDATED METHOD ---
+    
     def check_cache(self, query: str) -> Tuple[List[Document], bool, str, Optional[float]]:
         """
         Check all cache levels and return matching documents, hit status, source, and score (if applicable).
@@ -45,23 +44,22 @@ class TieredCacheManager:
         if exact_match_response is not None:
             self.hits["L1"] += 1
             print(f"[TieredCache] L1 HIT: {normalized_query}")
-            # --- FIX: Update access count on L1 Hit ---
             self._update_access_count(normalized_query)
             # Promote to L2 if threshold met
             if self.access_counts.get(normalized_query, 0) >= self.l2_access_threshold:
                  # Check if already promoted to avoid redundant prints/timestamp updates
                  if normalized_query not in self.frequent_cache:
                      self._add_to_frequent_cache(normalized_query, exact_match_response)
-            # --------------------------------------------
+            
             return [Document(page_content=exact_match_response, metadata={"normalized_query": normalized_query, "source": "L1_exact"})], True, "L1_exact", 1.0
 
         # L2: Check frequent/semantic cache (uses embeddings now)
-        l2_match = self._check_frequent_cache(normalized_query) # This already updates access count for the MATCHED item on hit
+        l2_match = self._check_frequent_cache(normalized_query) 
         if l2_match:
             self.hits["L2"] += 1
             response, original_cached_query, similarity_score = l2_match
-            print(f"[TieredCache] L2 HIT: Input '{normalized_query}' matched '{original_cached_query}' with Cosine score {similarity_score:.4f}")
-            # L2 already handles its own access count update inside _check_frequent_cache
+            #print(f"[TieredCache] L2 HIT: Input '{normalized_query}' matched '{original_cached_query}' with Cosine score {similarity_score:.4f}")
+        
             return [Document(page_content=response, metadata={"matched_query": original_cached_query, "input_query": normalized_query, "source": "L2_frequent", "similarity": similarity_score})], True, "L2_frequent", similarity_score
 
         # L3: Vector search for semantic matches
@@ -77,11 +75,8 @@ class TieredCacheManager:
 
         if vector_results:
             self.hits["L3"] += 1
-            # --- FIX: Update access count on L3 Hit ---
-            # Count access for the *input* query when L3 finds something potentially relevant
+
             self._update_access_count(normalized_query)
-            # We don't promote based on L3 hits to L2 automatically here
-            # --------------------------------------------
             vector_results.sort(key=lambda item: item[1], reverse=True)
             docs = [doc for doc, _ in vector_results]
             top_score = vector_results[0][1]
@@ -90,12 +85,11 @@ class TieredCacheManager:
                 doc.metadata["score"] = score
             return docs, True, "L3_vector", top_score
 
-        # --- FIX: Update access count on MISS ---
         # Count the miss for the input query as well
         self._update_access_count(normalized_query)
         # Promote to L2 if threshold met *after* a miss led to generation (handled in orchestrator's add_to_cache call now)
         # -----------------------------------------
-        print(f"[TieredCache] MISS: {normalized_query}")
+        #print(f"[TieredCache] MISS: {normalized_query}")
         self.hits["miss"] += 1
         return [], False, "miss", None
 
@@ -116,7 +110,7 @@ class TieredCacheManager:
         # L3: Add to vector store. Pass original query for metadata.
         self.vector_cache.add(query, response, {"original_query": query})
 
-    # --- UPDATED METHOD ---
+    
     def _check_frequent_cache(self, normalized_query: str) -> Optional[Tuple[str, str, float]]:
         """Check if normalized query semantically matches anything in frequent cache using embeddings."""
         self._clear_expired_frequent() # Clean expired L2 entries first
@@ -134,13 +128,13 @@ class TieredCacheManager:
 
             cached_keys = list(self.frequent_cache.keys())
             if not cached_keys:
-                 return None # No keys in cache to compare against
+                 return None 
 
             # Embed all cached keys
             # Consider batch embedding if embed_documents supports it well and L2 cache grows large
             cached_embeddings = self.embedding_model.embed_documents(cached_keys)
 
-            # Calculate cosine similarities between input query and all cached keys
+        
             # similarities will be a numpy array of shape (1, num_cached_keys)
             similarities = cosine_similarity([query_embedding], cached_embeddings)[0] # Extract the 1D array of scores
 
@@ -176,8 +170,7 @@ class TieredCacheManager:
 
         return None # No suitable match found in L2
 
-    # --- Existing methods (_update_access_count, _add_to_frequent_cache, _clear_expired_frequent, _get_dynamic_threshold, get_stats, remove_from_cache) remain the same ---
-    # Make sure _get_dynamic_threshold uses a low base_threshold like 0.55
+
     def _update_access_count(self, normalized_query: str) -> None:
         """Track query frequency using normalized keys."""
         self.access_counts[normalized_query] = self.access_counts.get(normalized_query, 0) + 1
@@ -205,7 +198,7 @@ class TieredCacheManager:
             if k in self.frequent_cache:
                 del self.frequent_cache[k]
                 del self.frequent_timestamps[k]
-                # Also remove from access counts if desired, or let it decay naturally
+                
                 if k in self.access_counts:
                     del self.access_counts[k]
                 count += 1
@@ -238,7 +231,7 @@ class TieredCacheManager:
              except Exception:
                  pass # Ignore if count fails
 
-        # Corrected key names (ensure consistency)
+        
         return {
             "hits_L1": self.hits["L1"],
             "hits_L2": self.hits["L2"],

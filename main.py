@@ -123,17 +123,83 @@ def run_tests(orchestrator, memory):
     memory.clear()
 
     queries = [
-        "What is the capital of France?",       # Test 1: Gen -> Cache L1/L3
-        "What is the capital of France?",       # Test 2: Expect L1 Hit, Access++ (Count=2) -> Promote L2
-        "What's the population of Paris?",      # Test 3: Gen -> Cache L1/L3
-        "What's the population of Paris?",      # Test 4: Expect L1 Hit, Access++ (Count=2) -> Promote L2
-        "Tell me the capital of France",        # Test 5: Expect L2 Hit (if sim >= thresh) OR L3 Hit
-        "How tall is the Eiffel Tower?",        # Test 6: Gen -> Cache L1/L3
-        "How tall is the Eiffel Tower?",        # Test 7: Expect L1 Hit, Access++ (Count=2) -> Promote L2
-        "summarize the plot of hamlet",         # Test 8: Gen -> Cache L1/L3
-        "Briefly summarize Hamlet's plot",      # Test 9: Expect L2 Hit (if sim >= thresh) OR L3 Hit
-        "What is the capital of France again?", # Test 10: Expect L2 Hit OR L3 Hit
-        "Tell me the capital of France",        # Test 11: Expect L2 Hit (refresh timestamp) OR L3 Hit
+        # --- Group 1: France Capital ---
+        "What is the capital of France?",               # 1: Miss -> Gen -> L1/L3, A=1
+        "What is the capital of France?",               # 2: L1 Hit, A=2 -> Promote L2
+        "Tell me the capital of France.",               # 3: Expect L2 Hit
+        "France's capital city?",                       # 4: Expect L2 Hit
+        "What city serves as the capital of France?",   # 5: Expect L2/L3 Hit
+
+        # --- Group 2: Paris Population ---
+        "What's the population of Paris?",              # 6: Miss -> Gen -> L1/L3, A=1
+        "What's the population of Paris?",              # 7: L1 Hit, A=2 -> Promote L2
+        "Population count for Paris?",                  # 8: Expect L2 Hit
+        "How many people live in Paris?",               # 9: Expect L2 Hit
+        "Tell me Paris's population number.",           # 10: Expect L2/L3 Hit
+
+        # --- Group 3: Eiffel Tower Height ---
+        "How tall is the Eiffel Tower?",                # 11: Miss -> Gen -> L1/L3, A=1
+        "How tall is the Eiffel Tower?",                # 12: L1 Hit, A=2 -> Promote L2
+        "Height of the Eiffel Tower?",                  # 13: Expect L2 Hit
+        "What is the Eiffel Tower's height?",           # 14: Expect L2 Hit
+        "Eiffel Tower altitude?",                       # 15: Expect L2/L3 Hit (Slightly different phrasing)
+
+        # --- Group 4: Hamlet Plot ---
+        "Summarize the plot of Hamlet.",                # 16: Miss -> Gen -> L1/L3, A=1
+        "Summarize the plot of Hamlet.",                # 17: L1 Hit, A=2 -> Promote L2
+        "Briefly summarize Hamlet's plot.",             # 18: Expect L2 Hit
+        "What happens in the play Hamlet?",             # 19: Expect L2/L3 Hit
+        "Give a synopsis of Shakespeare's Hamlet.",     # 20: Expect L2/L3 Hit
+
+        # --- Group 5: Photosynthesis ---
+        "Explain the process of photosynthesis.",       # 21: Miss -> Gen -> L1/L3, A=1
+        "Explain the process of photosynthesis.",       # 22: L1 Hit, A=2 -> Promote L2
+        "What is photosynthesis?",                      # 23: Expect L2 Hit
+        "How do plants make food using sunlight?",      # 24: Expect L2/L3 Hit
+        "Describe the energy conversion in plants.",    # 25: Expect L2/L3 Hit
+
+        # --- Group 6: Water's Boiling Point ---
+        "What is the boiling point of water in Celsius?", # 26: Miss -> Gen -> L1/L3, A=1
+        "What is the boiling point of water in Celsius?", # 27: L1 Hit, A=2 -> Promote L2
+        "At what Celsius temp does water boil?",        # 28: Expect L2 Hit
+        "Water's boiling point (C)?",                   # 29: Expect L2 Hit
+        "Boiling temperature for H2O in Celsius?",      # 30: Expect L2/L3 Hit
+
+        # --- Group 7: Author of '1984' ---
+        "Who wrote the book '1984'?",                   # 31: Miss -> Gen -> L1/L3, A=1
+        "Who wrote the book '1984'?",                   # 32: L1 Hit, A=2 -> Promote L2
+        "Author of 1984?",                              # 33: Expect L2 Hit
+        "Which author penned Nineteen Eighty-Four?",    # 34: Expect L2/L3 Hit
+        "George Orwell wrote which famous dystopian novel?", # 35: Expect L3 Hit (Tests relation)
+
+        # --- Group 8: Solar System Planets ---
+        "How many planets are in our solar system?",    # 36: Miss -> Gen -> L1/L3, A=1
+        "How many planets are in our solar system?",    # 37: L1 Hit, A=2 -> Promote L2
+        "Number of planets orbiting the sun?",          # 38: Expect L2 Hit
+        "Count the solar system's planets.",            # 39: Expect L2 Hit
+        "Total planets in this solar system?",          # 40: Expect L2/L3 Hit
+
+        # --- Group 9: Artificial Intelligence Definition ---
+        "Define Artificial Intelligence.",              # 41: Miss -> Gen -> L1/L3, A=1
+        "Define Artificial Intelligence.",              # 42: L1 Hit, A=2 -> Promote L2
+        "What is AI?",                                  # 43: Expect L2 Hit
+        "Explain the concept of AI.",                   # 44: Expect L2 Hit
+        "What does the field of Artificial Intelligence study?", # 45: Expect L2/L3 Hit
+
+        # --- Group 10: Re-asking Earlier Promoted Queries (Testing L1/L2 Interaction) ---
+        "What is the capital of France?",               # 46: Expect L1 Hit (Even though promoted, L1 checked first)
+        "How tall is the Eiffel Tower?",                # 47: Expect L1 Hit
+        "Explain the process of photosynthesis.",       # 48: Expect L1 Hit
+        "What is the boiling point of water in Celsius?", # 49: Expect L1 Hit
+        "Who wrote the book '1984'?",                   # 50: Expect L1 Hit
+
+        # --- Group 11: More Variations on Promoted Items ---
+        "Tell me the capital of France again.",         # 51: Expect L2 Hit (Should hit L2 cache directly)
+        "The height of Paris's famous tower?",          # 52: Expect L2/L3 Hit (Variation on Eiffel Tower)
+        "Quick summary of Hamlet?",                     # 53: Expect L2 Hit
+        "How does AI work (simply)?",                   # 54: Expect L2/L3 Hit (Variation on AI definition)
+        "Number of planets we have?",                   # 55: Expect L2 Hit (Variation on solar system)
+        "Water boils at what C degree?",                # 56: Expect L2 Hit
     ]
 
     for i, query in enumerate(queries):
