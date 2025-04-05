@@ -27,37 +27,7 @@ The system utilizes a tiered caching strategy:
 *   Web Framework (Dashboard): Streamlit (`streamlit`)
 *   Supporting Libraries: `python-dotenv`, `numpy`, `scikit-learn` (for cosine similarity), `pandas`, `matplotlib`
 
-## 📂 Project Structure
-CAG/
-│
-├── caching/
-│ ├── init.py
-│ ├── exact_cache.py # L1: ExactMatchCache
-│ ├── vector_cache.py # L3: Vector store wrapper (ChromaDB)
-│ ├── tiered_cache.py # Manages L1, L2, L3 interactions
-│ └── cache_utils.py # (If you have utils like normalize_key here)
-│
-├── processing/
-│ ├── init.py
-│ ├── query_preprocessor.py # Query normalization, stopword removal etc.
-│ ├── response_generator.py # Handles LLM chain execution
-│ └── similarity.py # Similarity calculation (e.g., Jaccard - now less used)
-│
-├── monitoring/
-│ ├── init.py
-│ ├── telemetry.py # Telemetry collection system
-│ ├── dashboard.py # Streamlit dashboard UI code
-│ 
-│
-├── orchestration/
-│ ├── init.py
-│ ├── orchestrator.py # Main ImprovedCAGOrchestrator class
-│ 
-│
-├── main.py # Script for running tests
-├── run_dashboard_app.py # Script for running the Streamlit dashboard
-├── requirements.txt # Python package dependencies
-└── .env # Environment variables (API Keys - DO NOT COMMIT)
+
 
 
 
@@ -69,40 +39,6 @@ CAG/
 *   Conda or `venv` recommended for managing virtual environments.
 *   Access to the Groq API (or another LLM API supported by LangChain).
 
-### Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone <your-repo-url>
-    cd CAG
-    ```
-2.  **Create and activate a virtual environment:**
-    *   Using Conda:
-        ```bash
-        conda create -n cag_env python=3.9 -y
-        conda activate cag_env
-        ```
-    *   Using venv:
-        ```bash
-        python -m venv venv
-        source venv/bin/activate # On Linux/macOS
-        .\venv\Scripts\activate  # On Windows
-        ```
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *(If `requirements.txt` doesn't exist yet, create it after installing manually: `pip freeze > requirements.txt`)*
-
-### Environment Variables
-
-1.  Create a file named `.env` in the project root directory (`CAG/`).
-2.  Add your API keys to the `.env` file:
-    ```dotenv
-    GROQ_API_KEY="gsk_YOUR_GROQ_API_KEY_HERE"
-    # Add other keys if you switch LLM/Embedding providers
-    ```
-    **Important:** Ensure the `.env` file is added to your `.gitignore` file to prevent accidentally committing your API keys.
 
 ## ▶️ Usage
 
